@@ -3,6 +3,7 @@ import time
 
 import click
 import gradio as gr
+import numpy
 import onnxruntime as ort
 from scipy.signal import resample
 
@@ -32,33 +33,54 @@ class WebUI:
         if input_audio_tuple is None:
             return None, None, "Error: No input audio provided."
         sr, arr = input_audio_tuple
-        if arr.ndim == 2:
-            arr = arr[:, 0]
+
         waveform = (arr / 32768).astype('float32')
         original_samples = waveform.shape[0]
         if sr != 44100:
             waveform = resample(waveform, int(waveform.shape[0] * 44100 / sr))
+
         chunk_size = chunk_length * 44100
         overlap_size = max(chunk_size // 4, 16384)
         cut_size = max(chunk_size // 16, 4096)
+
         session = self.get_session(model_rel_path)
         if session is None:
             model_path = self.work_dir / model_rel_path
             session = ort.InferenceSession(model_path)
             self.sessions[model_rel_path] = session
+
+        if waveform.ndim == 1:
+            waveform_channels = [waveform]
+        else:
+            waveform_channels = waveform.T
+
+        harmonic_channels = []
+        noise_channels = []
         start = time.time()
-        harmonic, noise = infer(
-            session=session, waveform=waveform,
-            chunk_size=chunk_size, overlap_size=overlap_size, cut_size=cut_size,
-            batch_size=batch_size
-        )
+        for waveform_channel in waveform_channels:
+            harmonic_channel, noise_channel = infer(
+                session=session, waveform=waveform_channel,
+                chunk_size=chunk_size, overlap_size=overlap_size, cut_size=cut_size,
+                batch_size=batch_size
+            )
+            harmonic_channels.append(harmonic_channel)
+            noise_channels.append(noise_channel)
         end = time.time()
+        rtf = (end - start) / (original_samples / 44100)
+
+        if len(waveform_channels) == 1:
+            harmonic = harmonic_channels[0]
+            noise = noise_channels[0]
+        else:
+            harmonic = numpy.stack(harmonic_channels, axis=1)
+            noise = numpy.stack(noise_channels, axis=1)
+
         if sr != 44100:
             harmonic = resample(harmonic, original_samples)
             noise = resample(noise, original_samples)
         harmonic = (harmonic * 32768).astype('int16')
         noise = (noise * 32768).astype('int16')
-        rtf = (end - start) / (original_samples / 44100)
+
         return (sr, harmonic), (sr, noise), f"Cost: {end - start:.2f}s, RTF: {rtf:.2f}"
 
 
@@ -82,7 +104,7 @@ def webui(port, host, work_dir):
     inference = WebUI(work_dir)
     iface = gr.Interface(
         title="Harmonic-Noise Separation for Vocals",
-        description="Submit a clean, non-instrumental vocal recording and separate the harmonic and noise parts.",
+        description="Submit a clean, non-instrumental vocal recording to separate the harmonic and noise parts.",
         theme="default",
         fn=inference.infer_webui,
         inputs=[
