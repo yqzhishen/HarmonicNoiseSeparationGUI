@@ -10,6 +10,11 @@ from scipy.signal import resample
 from inference import infer
 
 
+INT16_WAV_MAX = 1 << 15
+INT24_WAV_MAX = 1 << 23
+INT32_WAV_MAX = 1 << 31
+
+
 class WebUI:
     def __init__(self, work_dir: pathlib.Path):
         self.work_dir = work_dir
@@ -34,7 +39,18 @@ class WebUI:
             return None, None, "Error: No input audio provided."
         sr, arr = input_audio_tuple
 
-        waveform = (arr / 32768).astype('float32')
+        if arr.dtype == numpy.int16:
+            waveform = (arr / INT16_WAV_MAX).astype(numpy.float32)
+        elif arr.dtype == numpy.int32:
+            # Distinguish between 24-bit and 32-bit audio by checking the max value
+            if arr.max() < INT24_WAV_MAX:
+                waveform = (arr / INT24_WAV_MAX).astype(numpy.float32)
+            else:
+                waveform = (arr / INT32_WAV_MAX).astype(numpy.float32)
+        elif arr.dtype == numpy.float32:
+            waveform = arr
+        else:
+            return None, None, f"Error: Unsupported audio data type {arr.dtype}."
         original_samples = waveform.shape[0]
         if sr != 44100:
             waveform = resample(waveform, int(waveform.shape[0] * 44100 / sr))
